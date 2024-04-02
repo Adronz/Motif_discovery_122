@@ -1,0 +1,227 @@
+import csv
+import time
+import random
+start_time = time.time()
+
+print("begin")
+
+def fasta_to_dict(file_path):
+    fasta_dict = {}
+    current_header = ""
+
+    with open(file_path, 'r') as file:
+        for line in file:
+            line = line.strip()
+            if line.startswith('>'):  # Header line
+                current_header = line[1:]  # Remove the '>' character
+                fasta_dict[current_header] = ""
+            else:  # Sequence line
+                fasta_dict[current_header] += line
+
+    return fasta_dict
+
+def dict_to_list(dic: dict):
+    array = list()
+    for i in  dic:
+        array.append(dic[i])
+    return array
+
+
+centered_data = fasta_to_dict('/Users/AdrianHanson/Downloads/boundcentered.fasta')
+offset_data = fasta_to_dict('/Users/AdrianHanson/Downloads/boundrandomoffset.fasta')
+
+centered_list = dict_to_list(centered_data)
+offset_list = dict_to_list(offset_data)
+
+#######################
+#PROJECT
+#######################
+
+def pos_init(randomize:True, seq:str, k:int): 
+    pos = int()
+    if randomize == True:
+        pos = random.randint(17, 186)
+
+    if randomize == False:
+        pos = len(seq)//2 - k//2
+
+
+    return pos
+
+def background(seqs:dict):
+    total_base_count = {'A': 0, 'C': 0, 'T': 0, 'G': 0}
+
+    for seq in seqs.values():
+        for i in range(len(seq)):
+            total_base_count[seq[i]] += 1
+
+    return total_base_count
+
+def update_pwm_init(bp_count:dict, pwm:dict, position:int, num_sequences:int):
+    for i in range(4):
+        bp = str()
+        if i == 0:
+            bp = 'A'
+        if i == 1:
+            bp = 'C'
+        if i == 2:
+            bp = 'T'
+        if i == 3:
+            bp = 'G'
+        pwm[bp].append(bp_count[bp]/num_sequences)
+
+    return pwm
+
+
+
+def pwm_init(seqs:dict, randomize:bool, k:int):
+    num_sequences = len(seqs) #to divide the counts in the pwm
+    start_motifs = list() #list of just the initial motifs 
+
+    #Add psuedo motifs to ensure there are no 0's in the matrix 
+    start_motifs.append('A'*k)
+    start_motifs.append('C'*k)
+    start_motifs.append('T'*k)
+    start_motifs.append('G'*k)
+
+    '''
+    Encoding for iterating later
+    A:0
+    C:1
+    T:2
+    G:3
+    '''
+    for seq in seqs.values():
+        pos = pos_init(randomize,seq, k) #choose random starting location for motif
+        start_motifs.append(seq[pos:pos+k]) #make initial list of motifs
+
+    pwm = {'A':list(), 'C':list(), 'T':list(), 'G':list()}
+
+    #Get counts of the different base pairs at each position and update the pwm
+    for i in range(k): 
+        base_counts = {'A': 0, 'C': 0, 'T': 0, 'G': 0}
+        
+        for seq in seqs.values():
+            #sum counts of each bp
+            base_counts[seq[i]] += 1
+        pwm = update_pwm_init(base_counts,pwm,i,num_sequences)
+    
+
+
+    return pwm
+
+def list_all_kmers(seqs:dict,k:int):
+    all_kmers = dict()
+    for key, value in seqs.items():
+        for i in range(len(value) - k):
+            kmer = value[i:i+k]
+            if key not in all_kmers:
+                all_kmers[key]=[kmer]
+            else:
+                all_kmers[key].append(kmer)
+
+    return all_kmers
+
+def compute_probabilities(pwm:dict, kmer:str):
+    probability = 1 #will be multiplied later 
+    for i in range(len(kmer)):
+        nucleotide = kmer[i]
+        probability = probability*pwm[nucleotide][i] #mulitply probabilities together 
+    return probability
+
+def E_step(kmers_by_seq:dict, pwm:dict):
+    probabilities = dict()
+    
+    #go through each sequence, and compute the probability of each kmer according to the PWM
+    for seq, kmer_list in kmers_by_seq.items():       
+
+        for i in range(len(kmer_list)):
+            #compute prob of kmer i 
+            kmer_prob = compute_probabilities(pwm, kmer_list[i])
+
+            #add probabilities to the 
+            if seq not in probabilities:
+                probabilities[seq] = {kmer_list[i]:kmer_prob}
+
+            else:
+                probabilities[seq][kmer_list[i]] = kmer_prob
+
+    #normalize the probability of each kmer 
+    for seq in probabilities:
+        normalization = sum(probabilities[seq].values())
+        for key, value in probabilities[seq].items():
+            probabilities[seq][key] = value/normalization
+
+    return probabilities
+    
+
+def M_step(probabilities:dict, num_sequences:int):
+
+    new_pwm = {'A':list(), 'C':list(), 'T':list(), 'G':list()}
+
+    for base in new_pwm:
+        new_pwm[base] = [1] * 20 #initialize all values to 1 because we need a +1 psuedo count
+    
+    #this loops through each kmer and adds the probability to the new PWM
+    for seq in probabilities: 
+        for kmer in probabilities[seq]:
+            for i in range(len(kmer)):
+                nucleotide = kmer[i]
+                new_pwm[nucleotide][i] += probabilities[seq][kmer]
+    
+    # Divide each entry by num_sequences so that the data is normalized 
+    for base in new_pwm:
+        new_pwm[base] = [prob / num_sequences for prob in new_pwm[base]]
+
+    return new_pwm
+
+def motif_scan(offset:dict, all_kmers:dict, pwm:dict, k:int):
+    #the E step finds the probability of each kmer, so we can just use that
+    kmer_probabilities = E_step(all_kmers,pwm)
+    motif_locs = {}
+
+    #find the most probable kmer in each sequence 
+    for seq, kmer in kmer_probabilities.items():
+        motif = max(kmer, key=kmer.get)
+        print(motif)
+        for seq in offset:
+            for i in range(len(offset[seq])-k):
+                if offset[seq][i:i+k] == motif:
+                    #only the key is needed for the turn in format
+                    loc = f'{i}'
+                    key = f'{seq} {i}'
+                    motif_locs[key] = (loc)
+
+
+    return motif_locs
+
+#this is basically my main function
+def all_together_now(centered:dict, offset:dict, randomize: True, k:int,num_iter:int):
+    num_sequences = len(centered)
+    all_kmers = list_all_kmers(centered, k)
+    pwm = pwm_init(centered,randomize, k)
+    for i in range(num_iter):
+        probs = E_step(all_kmers, pwm)
+        pwm = M_step(probs, num_sequences)
+    predictions = motif_scan(offset, all_kmers, pwm, k)
+    return predictions
+
+
+predictions = all_together_now(offset_data, offset_data, True, 20, 150)
+print('EM done')
+
+first_key = next(iter(offset_data))
+first_value = offset_data[first_key]
+
+# print(f"First key: {first_key}, First value: {first_value}")
+
+with open('pleasework.csv', 'w', newline='') as csvfile:
+    writer = csv.writer(csvfile)
+    for key, value in predictions.items():
+        # writer.writerow([key, value])
+        writer.writerow(value)
+
+
+elapsed_time = time.time() - start_time
+print(elapsed_time)
+print('all done')
